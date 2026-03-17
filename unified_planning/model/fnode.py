@@ -64,8 +64,8 @@ class FNode(object):
             ),
             OperatorKind.INT_CONSTANT: lambda: str(self._content.payload),
             OperatorKind.REAL_CONSTANT: lambda: str(self._content.payload),
-            OperatorKind.ARRAY_CONSTANT: lambda: str(self._content.payload),
-            OperatorKind.SET_CONSTANT: lambda: str(self._content.payload),
+            OperatorKind.ARRAY_CONSTANT: lambda: str(list(self._content.payload)),
+            OperatorKind.SET_CONSTANT: lambda: str(set(self._content.payload)),
             OperatorKind.FLUENT_EXP: lambda: (
                 self._content.payload.name
                 + self.get_nary_expression_string(", ", self.args)

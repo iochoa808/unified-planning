@@ -212,11 +212,6 @@ class IntegersRemover(engines.engine.Engine, CompilerMixin):
             return True
         if node.is_lt() or node.is_le():
             return True
-        if node.is_equals():
-            left, right = node.arg(0), node.arg(1)
-            if left.type.is_int_type() or right.type.is_int_type():
-                return True
-            return self._has_arithmetic(left) or self._has_arithmetic(right)
         return any(self._requires_cp_in_condition(arg) for arg in node.args)
 
     # ==================== CP-SAT Constraint Solving ====================
