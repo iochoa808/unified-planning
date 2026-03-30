@@ -114,7 +114,7 @@ def nested_expr():
 
 class PDDLGrammar:
     def __init__(self):
-        name = Word(alphas, alphanums + "_" + "-")
+        name = Word(alphas, alphanums + "_" + "-" + ".")
         variable = Suppress("?") + name
 
         require_def = (
@@ -122,18 +122,28 @@ class PDDLGrammar:
             + ":requirements"
             + OneOrMore(
                 one_of(
-                    ":strips :typing :negative-preconditions :disjunctive-preconditions :equality :existential-preconditions :universal-preconditions :quantified-preconditions :conditional-effects :fluents :numeric-fluents :object-fluents :adl :durative-actions :duration-inequalities :timed-initial-literals :timed-initial-effects :action-costs :hierarchy :method-preconditions :constraints :contingent :preferences :time :continuous-effects"
+                    ":strips :typing :negative-preconditions :disjunctive-preconditions :equality :existential-preconditions :universal-preconditions :quantified-preconditions :conditional-effects :fluents :numeric-fluents :object-fluents :adl :durative-actions :duration-inequalities :timed-initial-literals :timed-initial-effects :action-costs :hierarchy :method-preconditions :constraints :contingent :preferences :time :continuous-effects :arrays :sets :bounded-integers"
                 )
             )
             + Suppress(")")
         )
+
+        type_constructor = (
+            # (number lo hi)
+            Group(Keyword("number") + Word(pyparsing.nums) + Word(pyparsing.nums))
+            # (array rows cols elem_type)
+            | Group(Keyword("array") + OneOrMore((name | Word(pyparsing.nums))))
+            # (set elem_type)
+            | Group(Keyword("set") + name)
+        )
+        type_parent = Group(Suppress("(") + type_constructor + Suppress(")")) | name
 
         types_def = (
             Suppress("(")
             + ":types"
             - set_results_name(
                 OneOrMore(
-                    Group(Group(OneOrMore(name)) + Optional(Suppress("-") + name))
+                    Group(Group(OneOrMore(name)) + Optional(Suppress("-") + type_parent))
                 ),
                 "types",
             )
@@ -154,6 +164,7 @@ class PDDLGrammar:
             + Suppress(")")
         )
 
+        # (name variable - name)
         predicate = (
             Suppress("(")
             + Group(
@@ -415,6 +426,7 @@ class UPPDDLReader:
             "-": self._em.Minus,
             "/": self._em.Div,
             "*": self._em.Times,
+            #"read": self._em.Read
         }
         self._trajectory_constraints: Dict[str, Callable] = {
             "always": self._em.Always,
@@ -475,6 +487,24 @@ class UPPDDLReader:
                             repr(e)
                             + f"\nError from line: {start_line}, col {start_col} to line: {end_line}, col {end_col}"
                         )
+                elif exp[0].value == "read":
+                    n_children = len(exp) - 1
+                    args = [solved.pop() for _ in range(n_children)]
+                    #args.reverse()
+                    base_exp = args[0]  # resolved FluentExp of the array fluent
+                    print(f"DEBUG BASE_EXP:{base_exp}")
+                    if len(args) == 1:
+                        # Fluent read: (read (top ?p))
+                        solved.append(base_exp)
+                    else:
+                        # Array read: (read (tower ?p) ?r) — create an ARRAY_READ node
+                        index_exp = args[1]
+                        if not base_exp.type.is_array_type():
+                            raise SyntaxError(
+                                f"'read' with an index requires an array fluent, "
+                                f"but '{base_exp}' has type '{base_exp.type}'"
+                            )
+                        solved.append(self._em.ArrayRead(base_exp, index_exp))
                 else:
                     start_line, start_col = exp.line_start(complete_str), exp.col_start(
                         complete_str
@@ -531,6 +561,16 @@ class UPPDDLReader:
                         for i in range(1, len(exp)):
                             stack.append((var, exp[i], False))
                     elif problem.has_fluent(exp[0].value):  # fluent reference
+                        stack.append((var, exp, True))
+                        for i in range(1, len(exp)):
+                            stack.append((var, exp[i], False))
+                    elif exp[0].value == "array.mk":
+                        elements = [int(exp[1][i].value) for i in range(len(exp[1]))]
+                        solved.append(self._em.Array(elements))
+                    elif exp[0].value == "set.mk":
+                        elements = [int(exp[1][i].value) for i in range(len(exp[1]))]
+                        solved.append(self._em.Set(set(elements)))
+                    elif exp[0].value == "read":
                         stack.append((var, exp, True))
                         for i in range(1, len(exp)):
                             stack.append((var, exp[i], False))
@@ -662,6 +702,38 @@ class UPPDDLReader:
                     cond,
                 )
                 act.add_effect(*eff if timing is None else (timing, *eff), forall=tuple(forall_variables.values()))  # type: ignore
+            elif op == "write":
+                # exp[1] is the write target, exp[2] is the value
+                # Two forms:
+                #   scalar: (write (top ?p) val)       — target is a plain fluent
+                #   array:  (write ((tower ?p) ?r) val) — target is fluent + index
+                target_exp = exp[1]
+                value_node = self._parse_exp(
+                    problem, act, types_map, forall_variables, exp[2], complete_str
+                )
+                if isinstance(target_exp[0].value, ParseResults):
+                    # Array write: target_exp[0] is the fluent call, target_exp[1] is the index
+                    array_node = self._parse_exp(
+                        problem, act, types_map, forall_variables, target_exp[0], complete_str
+                    )
+                    if not array_node.type.is_array_type():
+                        raise SyntaxError(
+                            f"Array write target '{array_node}' has type '{array_node.type}', "
+                            f"expected an array type"
+                        )
+                    index_node = self._parse_exp(
+                        problem, act, types_map, forall_variables, target_exp[1], complete_str
+                    )
+                    target_node = self._em.ArrayWrite(array_node, index_node)
+                else:
+                    # Scalar write: (write (top ?p) val) — equivalent to assign
+                    target_node = self._parse_exp(
+                        problem, act, types_map, forall_variables, target_exp, complete_str
+                    )
+                eff = (target_node, value_node, cond)
+                act.add_effect(*eff if timing is None else (timing, *eff),
+                               forall=tuple(forall_variables.values()))  # type: ignore
+
             elif op == "increase":
                 if "#t" in exp:
                     if not (
@@ -1375,19 +1447,37 @@ class UPPDDLReader:
 
         # extract all type declarations into a dictionary
         type_declarations: Dict[str, typing.Optional[str]] = {}
+        compound_declarations: list = []  # (name, constructor
+
         for type_line in domain_res.get("types", []):
-            father_name = None if len(type_line) <= 1 else str(type_line[1])
-            if father_name is None and object_type_needed:
-                father_name = Object
+            # TODO: father_name = None if len(type_line) <= 1 else type_line[1]
+            if len(type_line) <= 1:
+                raw_parent = None
+            else:
+                raw_parent = type_line[1]
+
             for declared_type in type_line[0]:
                 declared_type = str(declared_type)
-                if declared_type in type_declarations:
-                    raise SyntaxError(
-                        f"Type {declared_type} is declared more than once"
-                    )
-                if declared_type == Object:
-                    father_name = None
-                type_declarations[declared_type] = father_name
+                if isinstance(raw_parent, str) or raw_parent is None:
+                    # Default case, as always
+                    father_name = raw_parent
+                    # Type declared without parent, parent is object
+                    if father_name is None and object_type_needed:
+                        father_name = Object
+                    # Type declared with object as parent
+                    if declared_type == Object:
+                        father_name = None
+
+                    if declared_type in type_declarations:
+                        raise SyntaxError(
+                            f"Type {declared_type} is declared more than once"
+                        )
+                    type_declarations[declared_type] = father_name
+                else:
+                    # Compound parent: raw_parent is the type_parent Group
+                    # raw_parent[0] is the type constructor Group
+                    constructor = raw_parent[0]
+                    compound_declarations.append((declared_type, constructor))
 
         # Processes a type and adds it to the `types_map`.
         # If the father was not previously declared, it will be recursively declared as well.
@@ -1425,10 +1515,41 @@ class UPPDDLReader:
         for declared_type, father_name in type_declarations.items():
             declare_type(declared_type, father_name)
 
+        # Now resolve compound types in declaration order
+        # (element types must appear before array/set types that reference them)
+        for declared_type, constructor in compound_declarations:
+            kind = str(constructor[0])
+            if kind == "number":
+                lo = int(str(constructor[1]))
+                hi = int(str(constructor[2]))
+                types_map[declared_type] = self._tm.IntType(lo, hi)
+            elif kind == "array":
+                elem_name = str(constructor[-1])
+                if elem_name not in types_map:
+                    raise SyntaxError(
+                        f"Array element type '{elem_name}' used before it is declared"
+                    )
+                sizes = [int(str(constructor[i])) for i in range(1, len(constructor) - 1)]
+                # Build from the inside out: last dimension wraps the element type first
+                array_type = types_map[elem_name]
+                for size in reversed(sizes):
+                    array_type = self._tm.ArrayType(size, array_type)
+                types_map[declared_type] = array_type
+            elif kind == "set":
+                elem_name = str(constructor[1])
+                if elem_name not in types_map:
+                    raise SyntaxError(
+                        f"Set element type '{elem_name}' used before it is declared"
+                    )
+                types_map[declared_type] = self._tm.SetType(types_map[elem_name])
+            else:
+                raise SyntaxError(f"Unknown type constructor: {kind}")
+
         if object_type_needed and Object not in types_map:
             # The object type is needed, but has not been defined explicitly. We manually define it
             types_map[Object] = self._env.type_manager.UserType("object", None)
 
+        print(f"\n\n  {types_map}\n")
         has_actions_cost = False
 
         for p in domain_res.get("predicates", []):
@@ -1486,6 +1607,7 @@ class UPPDDLReader:
                             + f"is defined twice.\nError from line: {g_start_line}, col: {g_start_col}"
                             + f" to line: {g_end_line}, col: {g_end_col}."
                         )
+
             # Determine return type: object type if annotated, else RealType
             if len(p) > 1:
                 ret_type_name = str(p[1])
@@ -1500,6 +1622,7 @@ class UPPDDLReader:
             else:
                 fluent_type = self._tm.RealType()
             f = up.model.Fluent(n, fluent_type, params, self._env)
+
             if n == "total-cost":
                 has_actions_cost = True
                 self._totalcost = cast(up.model.FNode, self._em.FluentExp(f))
@@ -1875,14 +1998,24 @@ class UPPDDLReader:
                 init = CustomParseResults(j)
                 operator = init[0].value
                 if operator == "=":
-                    problem.set_initial_value(
-                        self._parse_exp(
-                            problem, None, types_map, {}, init[1], problem_str
-                        ),
-                        self._parse_exp(
-                            problem, None, types_map, {}, init[2], problem_str
-                        ),
-                    )
+                    rhs = init[2]
+                    if isinstance(rhs.value, ParseResults) and len(rhs) > 0 and rhs[0].value in ("array.mk", "set.mk"):
+                        lhs = self._parse_exp(problem, None, types_map, {}, init[1], problem_str)
+                        constructor = rhs[0].value
+                        #rhs is the literal constructor
+                        elements = [int(rhs[1][i].value) for i in range(len(rhs[1]))]
+                        # elements are already an array, else create the set
+                        value = elements if constructor == "array.mk" else set(elements)
+                        problem.set_initial_value(lhs, value)
+                    else:
+                        problem.set_initial_value(
+                            self._parse_exp(
+                                problem, None, types_map, {}, init[1], problem_str
+                            ),
+                            self._parse_exp(
+                                problem, None, types_map, {}, init[2], problem_str
+                            ),
+                        )
                 elif (
                     len(init) == 3
                     and operator == "at"
