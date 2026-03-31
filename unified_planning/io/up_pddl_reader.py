@@ -506,6 +506,33 @@ class UPPDDLReader:
                                 )
                             result = self._em.ArrayRead(result, idx)
                         solved.append(result)
+                elif exp[0].value == "member":
+                    element = solved.pop()
+                    set_expr = solved.pop()
+                    solved.append(self._em.SetMember(element, set_expr))
+                elif exp[0].value == "subset":
+                    set1 = solved.pop()
+                    set2 = solved.pop()
+                    solved.append(self._em.SetSubseteq(set1, set2))
+                elif exp[0].value == "disjoint":
+                    set1 = solved.pop()
+                    set2 = solved.pop()
+                    solved.append(self._em.SetDisjoint(set1, set2))
+                elif exp[0].value == "cardinality":
+                    set_expr = solved.pop()
+                    solved.append(self._em.SetCardinality(set_expr))
+                elif exp[0].value == "union":
+                    set1 = solved.pop()
+                    set2 = solved.pop()
+                    solved.append(self._em.SetUnion(set1, set2))
+                elif exp[0].value == "intersect":
+                    set1 = solved.pop()
+                    set2 = solved.pop()
+                    solved.append(self._em.SetIntersection(set1, set2))
+                elif exp[0].value == "difference":
+                    set1 = solved.pop()
+                    set2 = solved.pop()
+                    solved.append(self._em.SetDifference(set1, set2))
                 else:
                     start_line, start_col = exp.line_start(complete_str), exp.col_start(
                         complete_str
@@ -580,8 +607,22 @@ class UPPDDLReader:
                             elements = [_parse_array_content(exp[k]) for k in range(1, len(exp))]
                         solved.append(self._em.Array(elements))
                     elif exp[0].value == "set.mk":
-                        elements = [int(exp[1][i].value) for i in range(len(exp[1]))]
-                        solved.append(self._em.Set(set(elements)))
+                        elems_group = exp[1]
+                        elements = set()
+                        for i in range(len(elems_group)):
+                            token = elems_group[i].value
+                            if isinstance(token, str) and problem.has_object(token):
+                                elements.add(self._em.ObjectExp(problem.object(token)))
+                            else:
+                                elements.add(int(token))
+                        solved.append(self._em.Set(elements))
+                    elif exp[0].value in (
+                        "member", "subset", "disjoint",
+                        "union", "intersect", "difference", "cardinality",
+                    ):
+                        stack.append((var, exp, True))
+                        for i in range(1, len(exp)):
+                            stack.append((var, exp[i], False))
                     elif exp[0].value == "read":
                         stack.append((var, exp, True))
                         for i in range(1, len(exp)):
@@ -774,6 +815,24 @@ class UPPDDLReader:
                         problem, act, types_map, forall_variables, exp[2], complete_str
                     )
                 eff = (target_node, value_node, cond)
+                act.add_effect(*eff if timing is None else (timing, *eff),
+                               forall=tuple(forall_variables.values()))  # type: ignore
+
+            elif op in ("add", "remove"):
+                # Set mutation effects:
+                #   (add ?elem myset)    → myset := SetAdd(?elem, myset)
+                #   (remove ?elem myset) → myset := SetRemove(?elem, myset)
+                element_node = self._parse_exp(
+                    problem, act, types_map, forall_variables, exp[1], complete_str
+                )
+                set_node = self._parse_exp(
+                    problem, act, types_map, forall_variables, exp[2], complete_str
+                )
+                if op == "add":
+                    value_node = self._em.SetAdd(element_node, set_node)
+                else:
+                    value_node = self._em.SetRemove(element_node, set_node)
+                eff = (set_node, value_node, cond)
                 act.add_effect(*eff if timing is None else (timing, *eff),
                                forall=tuple(forall_variables.values()))  # type: ignore
 
@@ -1493,7 +1552,6 @@ class UPPDDLReader:
         compound_declarations: list = []  # (name, constructor
 
         for type_line in domain_res.get("types", []):
-            # TODO: father_name = None if len(type_line) <= 1 else type_line[1]
             if len(type_line) <= 1:
                 raw_parent = None
             else:
@@ -2062,9 +2120,16 @@ class UPPDDLReader:
                             else:
                                 # ND: multiple row groups follow the token
                                 value = [_parse_array_mk(rhs[k]) for k in range(1, len(rhs))]
-                        else:
-                            elements = [int(rhs[1][i].value) for i in range(len(rhs[1]))]
-                            value = set(elements)
+                        else:  # set.mk
+                            elems_group = rhs[1]
+                            elements = set()
+                            for i in range(len(elems_group)):
+                                token = elems_group[i].value
+                                if isinstance(token, str) and problem.has_object(token):
+                                    elements.add(problem.object(token))
+                                else:
+                                    elements.add(int(token))
+                            value = elements
                         problem.set_initial_value(lhs, value)
                     else:
                         problem.set_initial_value(

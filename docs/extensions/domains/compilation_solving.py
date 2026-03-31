@@ -43,7 +43,7 @@ COMPILATION_PIPELINES = {
     'sc' : [
         CompilationKind.SETS_REMOVING,
         CompilationKind.COUNT_REMOVING,
-        #CompilationKind.USERTYPE_FLUENTS_REMOVING,
+        CompilationKind.USERTYPE_FLUENTS_REMOVING,
     ],
     'sci' : [
         CompilationKind.SETS_REMOVING,
