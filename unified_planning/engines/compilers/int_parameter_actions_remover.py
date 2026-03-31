@@ -468,6 +468,65 @@ class IntParameterActionsRemover(engines.engine.Engine, CompilerMixin):
             return None
         return em.create_node(node.node_type, tuple(new_args)).simplify()
 
+    def _transform_array_access(
+            self,
+            old_problem: Problem,
+            new_problem: Problem,
+            node: FNode,
+            int_params: Dict[str, int],
+            instantiations: Tuple[int, ...]
+    ) -> Union[FNode, None]:
+        """
+        Transform ARRAY_READ or ARRAY_WRITE into an indexed fluent expression.
+        Supports N-dimensional arrays by unwinding the chain of ARRAY_READ/WRITE nodes.
+        (read (board ?a) ?i ?j) with i=1,j=2 → board[1][2](?a)
+        (write ((board ?a) ?i ?j) val) with i=1,j=2 → board[1][2](?a)  [effect target]
+        """
+        # Unwind the chain of ARRAY_READ/ARRAY_WRITE nodes to collect all indices
+        indices = []
+        current = node
+        while current.is_array_read() or current.is_array_write():
+            idx = self._transform_expression(
+                old_problem, new_problem, current.arg(1), int_params, instantiations
+            )
+            if idx is None or not idx.is_int_constant():
+                return None
+            indices.insert(0, idx.constant_value())
+            current = current.arg(0)
+
+        if not current.is_fluent_exp():
+            return None
+
+        base_fluent = current.fluent()
+        base_name = base_fluent.name.split('[')[0]
+
+        # Check the full index tuple is within the valid domain
+        if tuple(indices) not in self.domains.get(base_name, []):
+            return None
+
+        # Transform the fluent's own arguments (e.g., the object parameters)
+        new_fluent_args = [
+            self._transform_expression(old_problem, new_problem, a, int_params, instantiations)
+            for a in current.args
+        ]
+        if any(a is None for a in new_fluent_args):
+            return None
+
+        # Determine element type after all index levels
+        elem_type = base_fluent.type
+        for _ in indices:
+            elem_type = elem_type.elements_type
+
+        indexed_name = base_name + "".join(f"[{k}]" for k in indices)
+        indexed_fluent = Fluent(
+            indexed_name,
+            elem_type,
+            _signature=base_fluent.signature,
+            environment=base_fluent.environment,
+            undefined_positions=base_fluent.undefined_positions,
+        )
+        return indexed_fluent(*new_fluent_args)
+
     def _transform_expression(
             self,
             old_problem: Problem,
@@ -520,6 +579,14 @@ class IntParameterActionsRemover(engines.engine.Engine, CompilerMixin):
             if result is None:
                 return None
             return result
+
+        if node.is_array_read() or node.is_array_write():
+            result = self._transform_array_access(old_problem, new_problem, node, int_params, instantiations)
+            self._expression_cache[cache_key] = result
+            if result is None:
+                return None
+            return result
+
         result = self._transform_generic(old_problem, new_problem, node, int_params, instantiations)
         self._expression_cache[cache_key] = result
         if result is None:

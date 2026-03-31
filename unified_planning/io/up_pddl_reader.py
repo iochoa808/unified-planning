@@ -490,21 +490,22 @@ class UPPDDLReader:
                 elif exp[0].value == "read":
                     n_children = len(exp) - 1
                     args = [solved.pop() for _ in range(n_children)]
-                    #args.reverse()
                     base_exp = args[0]  # resolved FluentExp of the array fluent
-                    print(f"DEBUG BASE_EXP:{base_exp}")
                     if len(args) == 1:
                         # Fluent read: (read (top ?p))
                         solved.append(base_exp)
                     else:
-                        # Array read: (read (tower ?p) ?r) — create an ARRAY_READ node
-                        index_exp = args[1]
-                        if not base_exp.type.is_array_type():
-                            raise SyntaxError(
-                                f"'read' with an index requires an array fluent, "
-                                f"but '{base_exp}' has type '{base_exp.type}'"
-                            )
-                        solved.append(self._em.ArrayRead(base_exp, index_exp))
+                        # Array read: chain one ArrayRead per index
+                        # (read (board ?a) ?i ?j) → ArrayRead(ArrayRead(board(a), i), j)
+                        result = base_exp
+                        for idx in args[1:]:
+                            if not result.type.is_array_type():
+                                raise SyntaxError(
+                                    f"'read' has more indices than array dimensions: "
+                                    f"'{result}' has type '{result.type}', which is not an array"
+                                )
+                            result = self._em.ArrayRead(result, idx)
+                        solved.append(result)
                 else:
                     start_line, start_col = exp.line_start(complete_str), exp.col_start(
                         complete_str
@@ -565,7 +566,18 @@ class UPPDDLReader:
                         for i in range(1, len(exp)):
                             stack.append((var, exp[i], False))
                     elif exp[0].value == "array.mk":
-                        elements = [int(exp[1][i].value) for i in range(len(exp[1]))]
+                        def _parse_array_content(group):
+                            if len(group) == 0:
+                                return []
+                            if isinstance(group[0].value, ParseResults):
+                                return [_parse_array_content(group[k]) for k in range(len(group))]
+                            return [int(group[k].value) for k in range(len(group))]
+                        if len(exp) == 2:
+                            # (array.mk (e1 e2 ...)) or (array.mk ((row0) (row1) ...))
+                            elements = _parse_array_content(exp[1])
+                        else:
+                            # (array.mk row0 row1 ...) — multiple top-level groups
+                            elements = [_parse_array_content(exp[k]) for k in range(1, len(exp))]
                         solved.append(self._em.Array(elements))
                     elif exp[0].value == "set.mk":
                         elements = [int(exp[1][i].value) for i in range(len(exp[1]))]
@@ -703,18 +715,14 @@ class UPPDDLReader:
                 )
                 act.add_effect(*eff if timing is None else (timing, *eff), forall=tuple(forall_variables.values()))  # type: ignore
             elif op == "write":
-                # exp[1] is the write target, exp[2] is the value
-                # Two forms:
-                #   scalar: (write (top ?p) val)       — target is a plain fluent
-                #   array:  (write ((tower ?p) ?r) val) — target is fluent + index
-                target_exp = exp[1]
-                value_node = self._parse_exp(
-                    problem, act, types_map, forall_variables, exp[2], complete_str
-                )
-                if isinstance(target_exp[0].value, ParseResults):
-                    # Array write: target_exp[0] is the fluent call, target_exp[1] is the index
+                # Three syntaxes:
+                #   scalar:  (write (top ?p) val)              — 3 tokens, plain fluent assignment
+                #   1D array:(write (tower ?p) (?r) val)       — 4 tokens, array element assignment
+                #   N-D array:(write ((board ?a) ?i ?j) val)   — 3 tokens, nested target
+                if len(exp) == 4:
+                    # 1D array write: (write (array-fluent) (index) value)
                     array_node = self._parse_exp(
-                        problem, act, types_map, forall_variables, target_exp[0], complete_str
+                        problem, act, types_map, forall_variables, exp[1], complete_str
                     )
                     if not array_node.type.is_array_type():
                         raise SyntaxError(
@@ -722,13 +730,48 @@ class UPPDDLReader:
                             f"expected an array type"
                         )
                     index_node = self._parse_exp(
-                        problem, act, types_map, forall_variables, target_exp[1], complete_str
+                        problem, act, types_map, forall_variables, exp[2], complete_str
+                    )
+                    value_node = self._parse_exp(
+                        problem, act, types_map, forall_variables, exp[3], complete_str
                     )
                     target_node = self._em.ArrayWrite(array_node, index_node)
+                elif len(exp) == 3 and isinstance(exp[1][0].value, ParseResults):
+                    # N-D array write: (write ((array-fluent args) i1 ... iN) value)
+                    # exp[1] = ((array-fluent args) i1 ... iN), exp[2] = value
+                    target_seq = exp[1]
+                    n_indices = len(target_seq) - 1
+                    value_node = self._parse_exp(
+                        problem, act, types_map, forall_variables, exp[2], complete_str
+                    )
+                    node = self._parse_exp(
+                        problem, act, types_map, forall_variables, target_seq[0], complete_str
+                    )
+                    # Chain (n_indices - 1) intermediate ArrayReads, then one ArrayWrite
+                    for k in range(1, n_indices):
+                        idx = self._parse_exp(
+                            problem, act, types_map, forall_variables, target_seq[k], complete_str
+                        )
+                        if not node.type.is_array_type():
+                            raise SyntaxError(
+                                f"'write' has more indices than array dimensions on '{node}'"
+                            )
+                        node = self._em.ArrayRead(node, idx)
+                    last_idx = self._parse_exp(
+                        problem, act, types_map, forall_variables, target_seq[n_indices], complete_str
+                    )
+                    if not node.type.is_array_type():
+                        raise SyntaxError(
+                            f"'write' target '{node}' is not an array type"
+                        )
+                    target_node = self._em.ArrayWrite(node, last_idx)
                 else:
                     # Scalar write: (write (top ?p) val) — equivalent to assign
                     target_node = self._parse_exp(
-                        problem, act, types_map, forall_variables, target_exp, complete_str
+                        problem, act, types_map, forall_variables, exp[1], complete_str
+                    )
+                    value_node = self._parse_exp(
+                        problem, act, types_map, forall_variables, exp[2], complete_str
                     )
                 eff = (target_node, value_node, cond)
                 act.add_effect(*eff if timing is None else (timing, *eff),
@@ -2002,10 +2045,26 @@ class UPPDDLReader:
                     if isinstance(rhs.value, ParseResults) and len(rhs) > 0 and rhs[0].value in ("array.mk", "set.mk"):
                         lhs = self._parse_exp(problem, None, types_map, {}, init[1], problem_str)
                         constructor = rhs[0].value
-                        #rhs is the literal constructor
-                        elements = [int(rhs[1][i].value) for i in range(len(rhs[1]))]
-                        # elements are already an array, else create the set
-                        value = elements if constructor == "array.mk" else set(elements)
+                        if constructor == "array.mk":
+                            # Parse array.mk supporting N-D arrays.
+                            # 1D: (array.mk (e1 e2 ... en)) — rhs has 2 elements: token + one group
+                            # ND: (array.mk row0 row1 ...) — rhs has token + N groups (one per row)
+                            def _parse_array_mk(group):
+                                """Recursively parse array.mk content group."""
+                                if len(group) == 0:
+                                    return []
+                                if isinstance(group[0].value, ParseResults):
+                                    return [_parse_array_mk(group[k]) for k in range(len(group))]
+                                return [int(group[k].value) for k in range(len(group))]
+                            if len(rhs) == 2:
+                                # 1D: single content group
+                                value = _parse_array_mk(rhs[1])
+                            else:
+                                # ND: multiple row groups follow the token
+                                value = [_parse_array_mk(rhs[k]) for k in range(1, len(rhs))]
+                        else:
+                            elements = [int(rhs[1][i].value) for i in range(len(rhs[1]))]
+                            value = set(elements)
                         problem.set_initial_value(lhs, value)
                     else:
                         problem.set_initial_value(
