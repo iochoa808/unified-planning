@@ -1,56 +1,46 @@
+(define (domain hanoi_5)
 
-;; The Towers of Hanoi problem (formalisation by Hector Geffner).
-
-;(define (domain hanoi)
-;  (:requirements :strips)
-;  (:predicates (clear ?x) (on ?x ?y) (smaller ?x ?y))
-;
-;  (:action move
-;    :parameters (?disc ?from ?to)
-;    :precondition (and (smaller ?to ?disc) (on ?disc ?from)
-;		       (clear ?disc) (clear ?to))
-;    :effect  (and (clear ?from) (on ?disc ?to) (not (on ?disc ?from))
-;		  (not (clear ?to))))
-;  )
-
-(define (domain hanoi)
-    (:requirements :typing :adl :fluents :numeric-fluents)
+    (:requirements :typing :arrays)
 
     (:types
-        peg disc - object
-        this - peg
+        peg   - object
         range - (number 0 5)
         stack - (array 5 range)
     )
 
-    (:predicates
-        (on ?x - disc ?y - object)
-        (smaller ?x - disc ?y - object)
-    )
-
     (:functions
         (tower ?p - peg) - stack
-        (top ?p - peg) - range
+        (top   ?p - peg) - range
     )
-
-
 
     (:action move
-        :parameters (?d - disc ?from - object ?to - object ?p ?q - peg ?r - range)
+        :parameters (?from ?to - peg ?f ?t - range)
         :precondition (and
-            (smaller ?d ?to)
-            (on ?d ?from)
-            (forall (?w - disc)
-                (and (not (on ?w ?d))
-                (not (on ?w ?to)))
+            (not (= ?from ?to))
+
+            ; bind ?f and ?t to the actual top positions
+            (= (top ?from) ?f)
+            (= (top ?to)   ?t)
+
+            ; ?from is not empty
+            (> ?f 0)
+
+            ; ?to is empty or top disc of ?from is smaller
+            (or
+            (= ?t 0)
+                (<
+                    (read (tower ?from) ?f)
+                    (read (tower ?to)   ?t))
             )
-            ;(= (read (top ?p)) 0)
-            (= (read (tower ?p) (?r)  ) 0)
         )
         :effect (and
-            (on ?d ?to)
-            (not (on ?d ?from))
-            ;(write (tower ?p) (read (top ?p)))
+            ; place disc on ?to
+            (write ((tower ?to)   (+ ?t 1)) (read (tower ?from) ?f))
+            ; clear slot on ?from
+            (write ((tower ?from) ?f)       0)
+            ; update counters
+            (assign (top ?from) (- ?f 1))
+            (assign (top ?to)   (+ ?t 1))
         )
-    )
+  )
 )

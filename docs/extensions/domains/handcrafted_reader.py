@@ -65,8 +65,8 @@ instance = 'problem'
 solving = 'fast-downward'
 
 reader = PDDLReader()
-domain_filename = f'docs/extensions/domains/{domain}/domain_sets2.pddl'
-problem_filename = f'docs/extensions/domains/{domain}/problem_sets2.pddl'
+domain_filename = f'docs/extensions/domains/{domain}/domain_sets.pddl'
+problem_filename = f'docs/extensions/domains/{domain}/problem_sets.pddl'
 
 problem = reader.parse_problem(domain_filename, problem_filename)
 

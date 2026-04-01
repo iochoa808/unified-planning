@@ -1,0 +1,142 @@
+Can you check all the changes made in the compilers and justify them? If they are not necessary or can be implemented differently without touching the compilers better. Ask for any change before
+doing it
+
+● Bash(git diff HEAD -- unified_planning/engines/compilers/arrays_remover.py unified_planning/engines/compilers/int_parameter_actions_remover.py unified_planning/engin…)
+  ⎿  (No output)
+
+● Bash(git log --oneline -5 && git stash list && git show HEAD --stat)
+  ⎿  1b1f8156 Additional test files
+     7a843a45 Sets & arrays working
+     2170cbef Array operators work: array_read, array_write and array_mk
+     … +22 lines (ctrl+o to expand)
+
+● Bash(git diff 8903598f HEAD -- unified_planning/engines/compilers/arrays_remover.py | head -400)
+  ⎿  diff --git a/unified_planning/engines/compilers/arrays_remover.py b/unified_planning/engines/compilers/arrays_remover.py
+     index 197dff95..88462108 100644
+     --- a/unified_planning/engines/compilers/arrays_remover.py
+     … +50 lines (ctrl+o to expand)
+
+● Bash(git diff 8903598f HEAD -- unified_planning/engines/compilers/int_parameter_actions_remover.py | head -300)
+  ⎿  diff --git a/unified_planning/engines/compilers/int_parameter_actions_remover.py b/unified_planning/engines/compilers/int_parameter_actions_remover.py
+     index cbf04c21..d3761285 100644
+     --- a/unified_planning/engines/compilers/int_parameter_actions_remover.py
+     … +48 lines (ctrl+o to expand)
+
+● Bash(git diff 8903598f HEAD -- unified_planning/engines/compilers/integers_remover.py | head -100)
+  ⎿  (No output)
+
+● Bash(git diff 8903598f HEAD -- unified_planning/engines/compilers/sets_remover.py | wc -l && git diff 8903598f HEAD -- unified_planning/engines/compilers/sets_remove…)
+  ⎿  204
+     diff --git a/unified_planning/engines/compilers/sets_remover.py b/unified_planning/engines/compilers/sets_remover.py
+     index 07d68ad8..5697577e 100644
+     … +38 lines (ctrl+o to expand)
+
+● Bash(git diff 8903598f HEAD -- unified_planning/engines/compilers/sets_remover.py | tail -120)
+  ⎿           set1, set2 = effect.value.args
+
+     -        # No nested expressions allowed
+     … +39 lines (ctrl+o to expand)
+
+● Now I have the full picture. Let me go through every change, file by file.
+
+  ---
+  arrays_remover.py — 3 changes
+
+  Change 1: new _transform_array_access method
+
+  Necessary. When the parser produces (read (board ?a) ?i ?j), the FNode tree is ArrayRead(ArrayRead(board(?a), i), j) — a chain. The original compiler had no code to handle ARRAY_READ nodes at all;
+  they would fall through to unhandled branches. This method unwinds the chain, collects the concrete integer indices, and maps to the indexed fluent board[i][j](?a). This cannot be done without
+  touching the compiler.
+
+  Change 2: guard in _transform_expression before the array-comparison check
+
+  Necessary. Without it, an ARRAY_READ node reaches the line:
+  if node.args and node.arg(0).type.is_array_type():
+      return self._transform_array_comparison(…)
+  An ARRAY_READ's first arg is indeed array-typed, so it would be misrouted to the comparison handler. The guard must come first.
+
+  Change 3: default_value=Int(0) in _add_array_as_indexed_fluent
+
+  Necessary, but could be done differently. The problem is that the Index user type is shared across all dimensions and sized to max(dimensions). For a 3×4 array, Index has 4 objects (i0…i3), but
+  row-indexed fluents only use i0…i2. The 4th position (i3) gets no initial value → UNDEFINED_INITIAL_NUMERIC.
+
+  An alternative would be to not use a shared Index type and instead create one per dimension, or to create only valid index combinations. However, this would be a much larger refactor of the
+  arrays_remover. The Int(0) default is a correct and safe fix: unused positions get value 0, which is harmless because no valid action can reference them.
+
+  ---
+  int_parameter_actions_remover.py — 2 changes
+
+  Change 1: new _transform_array_access method
+
+  Necessary, and cannot be shared with the one in arrays_remover. IPAR runs before ArraysRemover in the pipeline. At this stage, array indices are still action parameters (e.g., ?r - range), not
+  concrete integers. IPAR must substitute the grounded value of ?r into the index, then check bounds via self.domains, then produce an indexed-fluent expression. ArraysRemover's version assumes indices
+   are already concrete.
+
+  Change 2: guard in _transform_expression
+
+  Necessary, for the same reason as in arrays_remover: without it, ARRAY_READ nodes fall through to _transform_generic, which recurses on children without the domain-bounds check and produces a wrong
+  result.
+
+  ---
+  integers_remover.py — no changes
+
+  Correct. This compiler runs after IPAR and ArraysRemover, at which point all array and bounded-int structure has been eliminated. Nothing needed changing here.
+
+  ---
+  sets_remover.py — 5 changes
+
+  Change 1: _transform_subseteq — added new_problem parameter and fluent-vs-fluent / fluent-vs-constant cases
+
+  Bug fix — necessary. The original code:
+  if set_expr_2.is_fluent_exp():
+      new_fluent = self._fluent_mapping[set_expr_2.fluent().name]
+      if set_expr_1.constant_value():   # ← AssertionError if set_expr_1 is a fluent
+  The constant_value() call asserts is_constant() internally. If both sides are fluents, this crashes. The fluent-vs-fluent case (And(¬f1(o) ∨ f2(o) for o in objects)) is the standard ⊆ encoding. The
+  new_problem parameter is required to enumerate objects. No way around this.
+
+  Change 2: _transform_union_effect — added false effects
+
+  Bug fix — necessary for correct semantics. assign result := s1 ∪ s2 must set result(o) = s1(o) OR s2(o) for every object. The original only set elements to true when the condition held, never to
+  false. If result previously contained elements outside s1 ∪ s2, they would stay true forever. The fix emits a paired false effect with the negated condition.
+
+  Change 3: _transform_intersect_effect — added false effects + fixed constant case
+
+  Bug fix — necessary. Same semantic issue as union: elements outside s1 ∩ s2 must be cleared. Additionally, the constant case was iterating only over the constant elements (missing the elements that
+  should be set to false). Fixed to iterate over all objects and emit both branches.
+
+  Change 4: _transform_difference_effect — signature fix + false effects + constant cases fixed
+
+  Two bugs fixed — both necessary.
+  - Signature bug: called as _transform_difference_effect(new_problem, effect) but declared with (new_problem, new_action, effect). Python would assign new_action=effect and raise TypeError: missing
+  argument. The method was also calling new_action.add_effect(…) inconsistently with the other handlers that return a list. Fixed to (new_problem, effect) -> List[Effect].
+  - Missing false effects: same semantic issue as union/intersect.
+
+  Change 5: call site update for _transform_subseteq
+
+  Necessary consequence of Change 1 — passing new_problem.
+
+  ---
+  Summary
+
+  ┌────────────────┬─────────────────────────────────────────────┬──────────────────────┬───────────────────────────────────────────────────────┐
+  │      File      │                   Change                    │         Type         │                   Could be avoided?                   │
+  ├────────────────┼─────────────────────────────────────────────┼──────────────────────┼───────────────────────────────────────────────────────┤
+  │ arrays_remover │ _transform_array_access                     │ Feature (N-D arrays) │ No                                                    │
+  ├────────────────┼─────────────────────────────────────────────┼──────────────────────┼───────────────────────────────────────────────────────┤
+  │ arrays_remover │ guard in _transform_expression              │ Bug prevention       │ No                                                    │
+  ├────────────────┼─────────────────────────────────────────────┼──────────────────────┼───────────────────────────────────────────────────────┤
+  │ arrays_remover │ default_value=Int(0)                        │ Bug fix              │ Alternative: redesign Index type (much larger change) │
+  ├────────────────┼─────────────────────────────────────────────┼──────────────────────┼───────────────────────────────────────────────────────┤
+  │ ipar           │ _transform_array_access                     │ Feature (N-D arrays) │ No                                                    │
+  ├────────────────┼─────────────────────────────────────────────┼──────────────────────┼───────────────────────────────────────────────────────┤
+  │ ipar           │ guard in _transform_expression              │ Bug prevention       │ No                                                    │
+  ├────────────────┼─────────────────────────────────────────────┼──────────────────────┼───────────────────────────────────────────────────────┤
+  │ sets_remover   │ _transform_subseteq fluent cases            │ Bug fix              │ No                                                    │
+  ├────────────────┼─────────────────────────────────────────────┼──────────────────────┼───────────────────────────────────────────────────────┤
+  │ sets_remover   │ false effects in union/intersect/difference │ Bug fix              │ No                                                    │
+  ├────────────────┼─────────────────────────────────────────────┼──────────────────────┼───────────────────────────────────────────────────────┤
+  │ sets_remover   │ _transform_difference_effect signature      │ Bug fix              │ No                                                    │
+  └────────────────┴─────────────────────────────────────────────┴──────────────────────┴───────────────────────────────────────────────────────┘
+
+  All changes are either necessary to support the new features or fix pre-existing bugs in the sets_remover that were not triggered before because the full set of operators wasn't being exercised. None
+   can be implemented without touching the compilers.
