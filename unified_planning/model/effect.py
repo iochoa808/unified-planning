@@ -101,7 +101,7 @@ class Effect:
                 if v in free_vars and v not in seen:
                     seen.add(v)
                     assert isinstance(
-                        v, up.model.variable.Variable
+                        v, (up.model.variable.Variable, up.model.range_variable.RangeVariable)
                     ), "Typing not respected"
                     yield v
                 elif isinstance(v, up.model.range_variable.RangeVariable):

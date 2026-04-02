@@ -1,7 +1,8 @@
-# Unified-Planning PDDL Extensions: Bounded Integers, Arrays, and Sets
+# Unified-Planning PDDL Extensions: Bounded Integers, Arrays, Sets, and Integer Quantifiers
 
-This document describes every change made to the base unified-planning library to support three
-PDDL extensions: **bounded integers**, **N-dimensional arrays**, and **sets**.
+This document describes every change made to the base unified-planning library to support four
+PDDL extensions: **bounded integers**, **N-dimensional arrays**, **sets**, and **integer-range
+quantifiers** (`forall`/`exists` over bounded integer types).
 The changes span five layers: data model, type system, parser, compilation pipeline, and test domains.
 
 ---
@@ -72,6 +73,40 @@ The changes span five layers: data model, type system, parser, compilation pipel
 (= (basket) (set.mk (apple banana)))
 (= (basket) (set.mk ()))    ; empty set
 ```
+
+### Forall / exists over bounded integer ranges
+
+When the quantified variable has a bounded integer type, the quantifier iterates
+over every integer in `[lower, upper]` rather than over a set of objects.
+This works in both preconditions/goals and in effect `forall` blocks.
+
+```pddl
+(:types
+    pancakes - (number 0 4)   ; integer range 0..4
+    stack    - (array 5 pancakes)
+)
+(:functions (pancake_stack) - stack)
+
+; Effect forall: reverse the prefix 0..?f of the stack (simultaneous assignment)
+(:action flip
+    :parameters (?f - pancakes)
+    :precondition ()
+    :effect (and
+        (forall (?i - pancakes)
+            (when (<= ?i ?f)
+                (write (pancake_stack) (?i) (read (pancake_stack) (- ?f ?i)))
+            )
+        )
+    )
+)
+
+; Precondition exists: check whether any position holds value 0
+(exists (?i - pancakes) (= (read (pancake_stack) ?i) 0))
+```
+
+After IPAR, `forall (?i - pancakes)` with the `when` guard expands to individual
+conditional effects for each value of `?i` in `[0, 4]`, and `exists` expands to a
+disjunction.
 
 ### Compilation pipelines (in `docs/extensions/domains/compilation_solving.py`)
 
@@ -391,7 +426,34 @@ elif op == "remove":
     act.add_effect(set_node, value_node, cond)
 ```
 
-### 6.4 `:init` section — `array.mk` and `set.mk`
+### 6.4 Quantifier variable creation — `forall` / `exists`
+
+At three sites in the parser, quantifier variables are created from a type lookup:
+
+| Site | Location |
+|------|----------|
+| Precondition/goal stack machine (`exists`/`forall` False branch) | line ~578 |
+| Effect `forall` for instantaneous actions | line ~1095 |
+| Effect `forall` for durative actions | line ~1337 |
+
+**Before:** all quantifier variables were unconditionally created as `Variable`:
+```python
+new_vars[o] = up.model.Variable(o, t)
+```
+
+**After:** if the type is a bounded integer, a `RangeVariable` is created instead:
+```python
+if t.is_int_type() and t.lower_bound is not None and t.upper_bound is not None:
+    new_vars[o] = up.model.RangeVariable(o, t.lower_bound, t.upper_bound)
+else:
+    new_vars[o] = up.model.Variable(o, t)
+```
+
+`RangeVariable` is the signal IPAR uses to distinguish integer-range quantifiers
+from object-type quantifiers.  Both `Forall` and `Exists` in the expression
+manager accept `RangeVariable` alongside `Variable`.
+
+### 6.5 `:init` section — `array.mk` and `set.mk`
 
 When the RHS of an `=` assignment is `array.mk` or `set.mk`, a special path is taken
 instead of general expression parsing:
@@ -476,6 +538,76 @@ def _transform_array_access(self, …, node, int_params, instantiations):
 
 `self.domains` maps each array fluent name to the set of valid index tuples,
 populated during problem transformation.
+
+### Forall / exists expansion over integer ranges
+
+**`_transform_quantifier`** — already existed for object quantifiers; it now also
+handles bounded integer variables.  When `effect.forall` (or a precondition
+quantifier) contains a `RangeVariable`, IPAR:
+
+1. Calls `_get_range_instantiations` to enumerate all integers in `[lower, upper]`.
+2. For each value, appends it to the instantiation tuple and recursively transforms
+   the body, substituting the range variable with its concrete integer.
+3. Combines the results: `forall` → `And(…)`, `exists` → `Or(…)`.
+
+**`_transform_expression`** — two new cases added to substitute integer values for
+range variables that appear inside expressions:
+
+```python
+# VARIABLE_EXP wrapping a RangeVariable (the parser always uses VariableExp)
+if node.is_variable_exp():
+    v = node.variable()
+    if isinstance(v, RangeVariable) and v.name in int_params:
+        return Int(instantiations[int_params[v.name]])
+    return node
+
+# RANGE_VARIABLE_EXP nodes (direct RangeVariableExp usage)
+if node.is_range_variable_exp():
+    var_name = node.range_variable().name
+    if var_name in int_params:
+        return Int(instantiations[int_params[var_name]])
+    return node
+```
+
+> **Why two cases?** The parser calls `VariableExp(range_var)` (creating a
+> `VARIABLE_EXP` node) regardless of whether the variable is a `RangeVariable`.
+> The old code passed all `VARIABLE_EXP` nodes through unchanged (treating them as
+> "free variables that stay symbolic").  Without the first case the range variable
+> would never be substituted, so all array indices would evaluate to `None` and
+> every grounded action would be pruned.
+
+### Compiler corrections
+
+**`effect.py` — `free_vars_without_duplicates` assertion** — the original assertion
+in `Effect.__init__` rejected any forall variable that was not a plain `Variable`:
+
+```python
+# Before
+assert isinstance(v, up.model.variable.Variable), "Typing not respected"
+
+# After
+assert isinstance(v, (up.model.variable.Variable, up.model.range_variable.RangeVariable)), "Typing not respected"
+```
+
+When a forall variable is a `RangeVariable` and appears free in the effect
+expression (which is always the case, e.g. `?i` appears in `write … (?i) …`), the
+iterator must yield it.  Without this fix, `Effect.__init__` raises `AssertionError`
+the moment any `forall (?i - int_type)` effect is parsed.
+
+**`_add_single_effect` — missing `is_constant()` guard** — the conditional effects
+branch called `value.constant_value()` unconditionally.  When the effect value is a
+fluent expression (e.g. `pancake_stack[k]`, the value being read from the array),
+this raises `AssertionError` inside `constant_value()`.  Fixed by guarding:
+
+```python
+# Before
+if (fluent.type.is_int_type() and
+        not fluent.type.lower_bound <= value.constant_value() <= fluent.type.upper_bound):
+
+# After
+if (fluent.type.is_int_type() and value.is_constant() and
+        not fluent.type.lower_bound <= value.constant_value() <= fluent.type.upper_bound):
+```
 
 ---
 
@@ -580,7 +712,7 @@ Encodes every set fluent `s(?params) : set{T}` as a boolean-indexed fluent
 
 ## 12. Test Domains
 
-Located in `docs/extensions/domains/tests/`:
+### Core tests — `docs/extensions/domains/tests/`
 
 | Domain file | Problem file | Features tested |
 |-------------|-------------|-----------------|
@@ -589,6 +721,34 @@ Located in `docs/extensions/domains/tests/`:
 | `15-puzzle_Domain.pddl` | `15-puzzle_Problem.pddl` | 4×4 array, arithmetic indices `(?i ± 1)`, `array.mk` in init and goal |
 | `domain_sets.pddl` | `problem_sets.pddl` | `add`, `remove`, `member`, set equality goal |
 | `domain_sets2.pddl` | `problem_sets2.pddl` | `union` (merge), `intersect` (keep_common), `difference` (take_complement), `add` (add_item); solvable 2-step plan |
+
+### Pancake sorting — `docs/extensions/domains/pancake-sorting/pddl-extension/`
+
+Exercises `forall (?i - int_type)` in effects with arithmetic array indices.
+
+**Domain** (`domain.pddl`): single action `flip(?f)` reverses the prefix
+`pancake_stack[0..?f]` in one step using a `forall` effect:
+
+```pddl
+(:types  pancakes - (number 0 4)   stack - (array 5 pancakes))
+
+(:action flip
+    :parameters (?f - pancakes)
+    :effect (forall (?i - pancakes)
+                (when (<= ?i ?f)
+                    (write (pancake_stack) (?i)
+                           (read (pancake_stack) (- ?f ?i))))))
+```
+
+After IPAR, `flip` expands to 5 grounded actions (`flip_0` … `flip_4`), each with
+up to 5 conditional write effects (one per position in range).
+
+| Problem | Initial stack | Goal | Min flips |
+|---------|--------------|------|-----------|
+| `i1.pddl` | `(3 4 2 1 0)` | `(0 1 2 3 4)` | 3 |
+| `i2.pddl` | `(3 0 1 2 4)` | `(0 1 2 3 4)` | 2 |
+| `i3.pddl` | `(1 4 0 3 2)` | `(0 1 2 3 4)` | 4 |
+| `i4.pddl` | `(0 2 3 4 1)` | `(0 1 2 3 4)` | 4 |
 
 ### Expected test output
 

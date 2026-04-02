@@ -1,8 +1,8 @@
-(define (problem pancake_i0)
+(define (problem pancake_i3)
     (:domain pancake)
 
     (:init
-        (= (pancake_stack) (array.mk (3 4 2 1 0)))
+        (= (pancake_stack) (array.mk (0 2 3 4 1)))
     )
 
     (:goal

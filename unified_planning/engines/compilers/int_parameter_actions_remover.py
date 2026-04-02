@@ -552,7 +552,16 @@ class IntParameterActionsRemover(engines.engine.Engine, CompilerMixin):
             return self._expression_cache[cache_key]
 
         # Base cases
-        if node.is_constant() or node.is_variable_exp() or node.is_timing_exp():
+        if node.is_constant() or node.is_timing_exp():
+            return node
+
+        if node.is_variable_exp():
+            v = node.variable()
+            if isinstance(v, RangeVariable) and v.name in int_params:
+                param_index = int_params[v.name]
+                result = Int(instantiations[param_index])
+                self._expression_cache[cache_key] = result
+                return result
             return node
 
         if node.is_parameter_exp():
@@ -563,6 +572,15 @@ class IntParameterActionsRemover(engines.engine.Engine, CompilerMixin):
                 self._expression_cache[cache_key] = result
                 if result is None:
                     return None
+                return result
+            return node
+
+        if node.is_range_variable_exp():
+            var_name = node.range_variable().name
+            if var_name in int_params:
+                param_index = int_params[var_name]
+                result = Int(instantiations[param_index])
+                self._expression_cache[cache_key] = result
                 return result
             return node
 
@@ -632,7 +650,7 @@ class IntParameterActionsRemover(engines.engine.Engine, CompilerMixin):
         # Handle conditional effects
         else:
             if condition not in [None, FALSE()] and fluent is not None and value is not None:
-                if (fluent.type.is_int_type() and
+                if (fluent.type.is_int_type() and value.is_constant() and
                         not fluent.type.lower_bound <= value.constant_value() <= fluent.type.upper_bound):
                     return True
                 self._add_effect_to_action(action, effect_type, fluent, value, condition, forall)

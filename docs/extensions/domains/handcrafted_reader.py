@@ -16,7 +16,7 @@ compilation_solving.compile_and_solve(problem, solving, compilation='up') #,comp
 '''
 
 domain = 'pancake-sorting'
-instance = 'i0'
+instance = 'i4'
 solving = 'fast-downward'
 
 reader = PDDLReader()

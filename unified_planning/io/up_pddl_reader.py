@@ -575,7 +575,10 @@ class UPPDDLReader:
                                     + f"\nError from line: {g_start_line}, col: {g_start_col} to line: {g_end_line}, col: {g_end_col}."
                                 )
                             for o in g.value[0]:
-                                new_vars[o] = up.model.Variable(o, t, self._env)
+                                if t.is_int_type() and t.lower_bound is not None and t.upper_bound is not None:
+                                    new_vars[o] = up.model.RangeVariable(o, t.lower_bound, t.upper_bound, self._env)
+                                else:
+                                    new_vars[o] = up.model.Variable(o, t, self._env)
                         # new_vars are the variables defined by the quantifier currently being solved
                         # all_vars are the variables defined by all the quantifiers around this expression
                         stack.append((new_vars, exp, True))
@@ -1089,7 +1092,10 @@ class UPPDDLReader:
                 for g in vars_res["params"]:
                     t = types_map[g.value[1] if len(g.value) > 1 else Object]
                     for o in g.value[0]:
-                        forall_variables[o] = up.model.Variable(o, t)
+                        if t.is_int_type() and t.lower_bound is not None and t.upper_bound is not None:
+                            forall_variables[o] = up.model.RangeVariable(o, t.lower_bound, t.upper_bound)
+                        else:
+                            forall_variables[o] = up.model.Variable(o, t)
                 to_add.append((exp[2], cond, forall_variables))
             else:
                 eff = (
@@ -1327,7 +1333,10 @@ class UPPDDLReader:
                 for g in vars_res["params"]:
                     t = types_map[g.value[1] if len(g.value) > 1 else Object]
                     for o in g.value[0]:
-                        forall_variables[o] = up.model.Variable(o, t)
+                        if t.is_int_type() and t.lower_bound is not None and t.upper_bound is not None:
+                            forall_variables[o] = up.model.RangeVariable(o, t.lower_bound, t.upper_bound)
+                        else:
+                            forall_variables[o] = up.model.Variable(o, t)
                 to_add.append((eff[2], forall_variables))
             else:
                 start_line, start_col = eff.line_start(complete_str), eff.col_start(
