@@ -5,8 +5,18 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="7c60bccf-105d-46ba-a2c0-79b47893c82f" name="Changes" comment="Changes to hanoi and changes justified.">
-      <change beforePath="$PROJECT_DIR$/docs/extensions/EXTENSIONS.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/extensions/EXTENSIONS.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docs/extensions/domains/15-puzzle/pddl-extension/i1.pddl" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docs/extensions/domains/15-puzzle/pddl-extension/i2.pddl" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docs/extensions/domains/15-puzzle/pddl-extension/i3.pddl" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docs/extensions/domains/pancake-sorting/pddl-extension/domain.pddl" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docs/extensions/domains/pancake-sorting/pddl-extension/i0.pddl" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docs/extensions/domains/pancake-sorting/pddl-extension/i1.pddl" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docs/extensions/domains/pancake-sorting/pddl-extension/i2.pddl" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docs/extensions/domains/pancake-sorting/pddl-extension/i3.pddl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/docs/extensions/domains/handcrafted_reader.py" beforeDir="false" afterPath="$PROJECT_DIR$/docs/extensions/domains/handcrafted_reader.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/extensions/domains/tests/15-puzzle_Domain.pddl" beforeDir="false" afterPath="$PROJECT_DIR$/docs/extensions/domains/15-puzzle/pddl-extension/domain.pddl" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/extensions/domains/tests/15-puzzle_Problem.pddl" beforeDir="false" afterPath="$PROJECT_DIR$/docs/extensions/domains/15-puzzle/pddl-extension/i0.pddl" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -46,7 +56,7 @@
     </favorite-branches>
     <option name="RECENT_BRANCH_BY_REPOSITORY">
       <map>
-        <entry key="$PROJECT_DIR$" value="new_types2" />
+        <entry key="$PROJECT_DIR$" value="pddl-extension-bugfixed" />
       </map>
     </option>
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -91,6 +101,9 @@
   &quot;associatedIndex&quot;: 8
 }</component>
   <component name="ProjectId" id="2YU5AraaukCMBQHOf5hit0YGmq2" />
+  <component name="ProjectLevelVcsManager">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
@@ -172,7 +185,7 @@
     "RunOnceActivity.git.unshallow": "true",
     "WebServerToolWindowFactoryState": "false",
     "git-widget-placeholder": "pddl-extension",
-    "last_opened_file_path": "//wsl.localhost/Ubuntu-24.04/home/isaac/unified-planning/docs/extensions/domains/hanoiIO/handcrafted",
+    "last_opened_file_path": "//wsl.localhost/Ubuntu-24.04/home/isaac/unified-planning/docs/extensions/domains/pancake-sorting/pddl-extension",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -185,18 +198,18 @@
 }]]></component>
   <component name="RecentsManager">
     <key name="CopyFile.RECENT_KEYS">
+      <recent name="\\wsl.localhost\Ubuntu-24.04\home\isaac\unified-planning\docs\extensions\domains\pancake-sorting\pddl-extension" />
+      <recent name="\\wsl.localhost\Ubuntu-24.04\home\isaac\unified-planning\docs\extensions\domains\15-puzzle\pddl-extension" />
       <recent name="\\wsl.localhost\Ubuntu-24.04\home\isaac\unified-planning\docs\extensions\domains\hanoiIO\handcrafted" />
       <recent name="\\wsl.localhost\Ubuntu-24.04\home\isaac\unified-planning\unified_planning\io" />
       <recent name="\\wsl.localhost\Ubuntu-24.04\home\isaac\unified-planning\docs\extensions\domains" />
-      <recent name="$PROJECT_DIR$/experiments/folding" />
-      <recent name="$PROJECT_DIR$/experiments" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
+      <recent name="\\wsl.localhost\Ubuntu-24.04\home\isaac\unified-planning\docs\extensions\domains\15-puzzle\pddl-extension" />
       <recent name="\\wsl.localhost\Ubuntu-24.04\home\isaac\unified-planning\docs\extensions\domains\hanoi\handcrafted" />
       <recent name="\\wsl.localhost\Ubuntu-24.04\home\isaac\unified-planning\docs\extensions\domains\hanoi" />
       <recent name="$PROJECT_DIR$/experiments/folding" />
       <recent name="$PROJECT_DIR$/experiments/puzznic/instances" />
-      <recent name="$PROJECT_DIR$/pytamer" />
     </key>
   </component>
   <component name="RunManager" selected="Python.Puzznic">

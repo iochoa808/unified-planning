@@ -1,4 +1,4 @@
-(define (domain n-puzzle)
+(define (domain fifteen-puzzle)
 
     (:requirements :arrays)
 
