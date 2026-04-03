@@ -426,7 +426,6 @@ class UPPDDLReader:
             "-": self._em.Minus,
             "/": self._em.Div,
             "*": self._em.Times,
-            #"read": self._em.Read
         }
         self._trajectory_constraints: Dict[str, Callable] = {
             "always": self._em.Always,
