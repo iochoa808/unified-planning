@@ -796,6 +796,13 @@ class IntParameterActionsRemover(engines.engine.Engine, CompilerMixin):
                 new_costs[new_action] = old_cost
         return new_costs
 
+    # ==================== GOALS TRANSFORMATION ====================
+    def _transform_goals(self, problem: Problem, new_problem: Problem):
+        for goal in problem.goals:
+            transformed = self._transform_expression(problem, new_problem, goal)
+            if transformed is not None and transformed != FALSE():
+                new_problem.add_goal(transformed)
+
     def _compile(
         self,
         problem: "up.model.AbstractProblem",
@@ -810,6 +817,7 @@ class IntParameterActionsRemover(engines.engine.Engine, CompilerMixin):
         new_problem.name = f"{self.name}_{problem.name}"
         new_problem.clear_actions()
         new_problem.clear_axioms()
+        new_problem.clear_goals()
         new_problem.clear_quality_metrics()
 
         # Transform components
@@ -820,6 +828,7 @@ class IntParameterActionsRemover(engines.engine.Engine, CompilerMixin):
         new_to_old = self._transform_actions(problem, new_problem)
         self._transform_quality_metrics(problem, new_problem, new_to_old)
         self._transform_axioms(problem, new_problem, new_to_old)
+        self._transform_goals(problem, new_problem)
 
         return CompilerResult(
             new_problem, partial(lift_action_instance, map=new_to_old), self.name,
