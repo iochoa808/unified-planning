@@ -8,7 +8,8 @@ natural dependency order: grammar → parser → IR model → tree walkers → c
 
 ---
 
-## Introduction: Syntax, Data Model, and Type System
+## 0. Introduction: Syntax, Data Model, and Type System
+
 
 Before diving into the individual changes, this section gives a broad mental map of
 the three foundational layers that the extension touches: the **PDDL surface syntax**
@@ -19,7 +20,7 @@ extension to one or more of these three layers.
 
 ---
 
-### I. PDDL Surface Syntax
+### 1.1. PDDL Surface Syntax
 
 #### Type declarations
 
@@ -116,6 +117,37 @@ value-returning operations:
 
 ---
 
+#### Count expressions
+
+`count` takes a list of boolean sub-expressions and returns how many of them are
+true. It appears wherever a numeric expression is expected, typically inside an
+arithmetic comparison:
+
+```pddl
+; At least 2 of the 3 lights are on
+(>= (count (lit ?a) (lit ?b) (lit ?c)) 2)
+
+; Exactly 1 sensor is active
+(= (count (active s1) (active s2) (active s3)) 1)
+
+; Symmetric: 3 must be true on both sides
+(= (count (flag ?a) (flag ?b) (flag ?c)) (count (done d1) (done d2) (done d3)))
+```
+
+Two compilers are available for eliminating `count`:
+
+| Compiler | `CompilationKind` | Strategy |
+|---|---|---|
+| `CountRemover` | `COUNT_REMOVING` | Expands `count op k` into a DNF boolean formula over all k-combinations of the arguments |
+| `CountIntRemover` | `COUNT_INT_REMOVING` | Introduces one `IntType(0,1)` helper fluent per count term; rewrites the comparison as an arithmetic sum |
+
+The DNF expansion is exact but produces formulas that grow as C(n,k), making it
+better suited for small counts or small argument lists. The integer-fluent approach
+keeps the formula compact but adds state variables and maintenance effects to every
+action that can change a tracked fluent.
+
+---
+
 #### Quantifiers over bounded integer types
 
 When a `forall` or `exists` variable is typed with a bounded integer type, the
@@ -141,205 +173,6 @@ The `when` guard is essential when the quantifier's body contains arithmetic tha
 can produce out-of-bounds indices (e.g., `(- ?r 1)` at `?r = 0`). The guard ensures
 the conditional effect is inactive for the problematic cases, while the compiler
 silently prunes them when expanding the quantifier.
-
----
-
-### II. Data Model
-
-The unified-planning library represents every expression — preconditions, effect
-values, goal conditions — as a tree of **FNodes**. Understanding the FNode structure
-is the key to understanding why every layer of the codebase (walkers, compilers,
-type checkers) had to be updated.
-
-#### FNode: the universal expression node
-
-An `FNode` is an **immutable, hash-consed** object with three fields:
-
-```
-FNode
-├── node_type: OperatorKind   — integer tag identifying the kind of expression
-├── args: Tuple[FNode, ...]   — child sub-expressions (may be empty)
-└── payload: Any              — kind-specific data (e.g., integer value, Fluent object)
-```
-
-- **`node_type`** is a member of the `OperatorKind` enum. It is the single field
-  that all tree-walking code dispatches on. Adding a new expression kind means adding
-  a new enum member.
-- **`args`** holds child FNodes in a fixed positional order. For a binary operator
-  like `ArrayRead`, `args[0]` is the array and `args[1]` is the index. Walkers call
-  `node.arg(0)`, `node.arg(1)`, etc.
-- **`payload`** stores kind-specific data that cannot be expressed as a child FNode:
-  for `FLUENT_EXP` it is the `Fluent` object; for `INT_CONSTANT` it is the Python
-  integer; for `ARRAY_CONSTANT` it is the Python list.
-
-**Hash-consing:** The `ExpressionManager.create_node(kind, args, payload)` factory
-hashes the triple `(kind, args, payload)` and returns a cached object if the same
-structure was created before. This means structurally identical expressions are the
-same Python object (`is`-equal), which makes set membership and caching of walk
-results cheap.
-
-#### OperatorKind and the dispatch pattern
-
-All tree-walking code in the library is built on `DagWalker`, a base class that:
-1. Visits each unique FNode exactly once (DAG, not tree — shared sub-expressions are
-   not revisited).
-2. Calls a registered handler method for each `OperatorKind`.
-3. Passes already-walked children as `args` to the handler (bottom-up).
-
-Handler registration is by method name (`walk_array_read` → handles `ARRAY_READ`) or
-by decorator (`@walkers.handles(OperatorKind.ARRAY_READ)`). If no handler is
-registered for a kind, the walker falls through to `walk_error`, which raises
-`NotImplementedError`.
-
-**This is why every walker had to be updated:** adding `ARRAY_READ` and `ARRAY_WRITE`
-to `OperatorKind` means every `DagWalker` subclass — the simplifier, the type
-checker, the free-variable extractor, and the compilers — must register handlers for
-the new kinds, or it will crash when it encounters the new nodes.
-
-#### New FNode kinds added by this branch
-
-The branch adds two user-facing kinds to `OperatorKind`:
-
-| Kind | `args` | `payload` | Meaning |
-|---|---|---|---|
-| `ARRAY_READ` | `(array_expr, index_expr)` | — | Read one element from an array |
-| `ARRAY_WRITE` | `(array_expr, index_expr)` | — | Indexed write target (effect fluent) |
-
-These two kinds sit at the boundary between "user-level PDDL" and "compiler IR".
-The parser produces them; the compilers (`IPAR`, `ArraysRemover`) consume and
-eliminate them, replacing them with indexed fluent expressions that classical planners
-can handle.
-
-The set operator kinds (`SET_MEMBER`, `SET_UNION`, etc.) were already present in the
-`master` branch at the Python API level. This branch only adds the **parser bridge**
-that makes them available from PDDL syntax.
-
-#### Effect targets and `ARRAY_WRITE`
-
-In the library's effect model, an `Effect` object stores:
-
-```
-Effect
-├── fluent:    FNode  — the target being written (normally a FLUENT_EXP)
-├── value:     FNode  — the new value
-└── condition: FNode  — when-guard (TRUE if unconditional)
-```
-
-For array-write effects, `fluent` is an `ARRAY_WRITE` node instead of a plain
-`FLUENT_EXP`. The chain structure mirrors the `ARRAY_READ` chain described in §1.5:
-
-```
-Effect.fluent = ArrayWrite(ArrayRead(board(?a), ?r), ?c)
-                      ↑ write at column ?c
-                      ↑ of the row at index ?r
-                      ↑ of the 2-D array board(?a)
-```
-
-Several validation checks in the effect construction code had to be relaxed to allow
-`ARRAY_WRITE` as a valid fluent node. The base `Fluent` object (needed for static-
-fluent analysis, for example) is recovered by unwinding the chain: follow `arg(0)`
-at each level until a `FLUENT_EXP` is reached.
-
----
-
-### III. Type System
-
-The library's type system provides the glue between PDDL type declarations and the
-expression tree. Every FNode has a `.type` attribute — computed lazily by the
-`TypeChecker` walker — that describes the kind of value the expression evaluates to.
-
-#### The three new types
-
-**`_IntType(lower_bound, upper_bound)`** — bounded integer
-
-Represents a finite range of integers `[lower_bound, upper_bound]`. The bounds are
-stored as Python integers (or `None` for unbounded). This type already existed in
-the library; the extension makes the parser aware of it by recognising the `(number
-lo hi)` constructor in `:types` and producing the correct `_IntType` object.
-
-Key properties used by the compilers:
-- `t.is_int_type()` — True
-- `t.lower_bound`, `t.upper_bound` — the numeric bounds, used by IPAR to enumerate
-  the grounding range
-
-**`_ArrayType(size, elements_type)`** — fixed-size array
-
-Represents a 1-D array of exactly `size` elements, each of type `elements_type`.
-N-dimensional arrays are represented as **nested** `_ArrayType` objects:
-
-```
-(array 4 4 card)
-→ _ArrayType(4, _ArrayType(4, _UserType('card')))
-     ↑ 4 rows           ↑ each row has 4 cards
-```
-
-Reading one index strips the outermost layer: `ArrayRead(arr, i)` where `arr` has
-type `_ArrayType(4, T)` produces a node of type `T`. If `T` is itself an
-`_ArrayType`, another `ArrayRead` can be applied. The `TypeChecker` handler for
-`ARRAY_READ` implements this as `expression.arg(0).type.elements_type` — one call
-per read level.
-
-Key properties used throughout:
-- `t.is_array_type()` — True
-- `t.size` — number of elements at this dimension (used by `ArraysRemover` to
-  enumerate slots)
-- `t.elements_type` — type of each element (used by `TypeChecker`, `ArraysRemover`,
-  and `IPAR` to determine what type an indexed access returns)
-
-**`_SetType(elements_type)`** — unordered collection
-
-Represents an unordered collection of values all of type `elements_type`. Unlike
-`_ArrayType`, a set has no fixed size — its cardinality is a runtime property, not
-a compile-time constant. The element type can be a `_UserType` (for sets of objects)
-or an `_IntType` (for sets of integers).
-
-Key properties:
-- `t.is_set_type()` — True
-- `t.elements_type` — type of the elements (used by `TypeChecker` to validate
-  `SET_MEMBER`, `SET_UNION`, etc.)
-
-#### How types flow through the system
-
-The type system participates in three distinct phases:
-
-1. **Declaration phase** (in the parser): the `:types` block is processed and each
-   declared name is mapped to a type object in `types_map`. Compound type parents
-   (`(number ...)`, `(array ...)`, `(set ...)`) produce `_IntType`, `_ArrayType`,
-   or `_SetType` objects rather than `_UserType`.
-
-2. **Construction phase** (when FNodes are built): the `ExpressionManager` does not
-   immediately compute types. Types are stored on the type object, not on the FNode.
-   When a `Fluent` is declared with a return type (e.g., `(puzzle) - puzzle15`), the
-   `Fluent` object stores that type. A `FLUENT_EXP` FNode for `(puzzle)` therefore
-   has `.type` equal to the fluent's declared type. Child nodes like `ARRAY_READ`
-   derive their type from the parent's type via the `TypeChecker`.
-
-3. **Type-checking phase** (the `TypeChecker` walker): the walker traverses the
-   expression tree bottom-up, calling its registered handlers. Each handler returns
-   the type of its node given the already-computed types of its children. The result
-   is memoised on the FNode. For `ARRAY_READ(board(?a), ?i)`, the handler returns
-   `board_fluent.type.elements_type` — one level of array unwrapping.
-
-   The same walker is used in the compilers to type-check intermediate expressions
-   and verify that assignments are type-compatible before generating the ground
-   problem.
-
----
-
-## 0. Background and motivation
-
-The `unified-planning` library already supports arrays and sets at the Python API
-level (you can build problems programmatically using `ArrayType`, `SetType`, etc.).
-What was missing was the ability to **read a PDDL file** that declares arrays, sets,
-or bounded integer types and have the library understand it. This branch adds that
-PDDL surface syntax and wires it all the way through to the compilers that eliminate
-these constructs so that standard planners can solve the resulting problems.
-
-Three new PDDL requirements are introduced: `:arrays`, `:sets`, and
-`:bounded-integers`. They correspond to new type constructors (`array`, `set`,
-`number`), new expression operators (`read`, `write`, `array.mk`, `set.mk`,
-`member`, `subset`, `disjoint`, `cardinality`, `union`, `intersect`,
-`difference`), and new effect operators (`write`, `add`, `remove`).
 
 ---
 
@@ -638,7 +471,45 @@ raises `SyntaxError("Unknown operator")` regardless of context.
 
 ---
 
-### 1.9 Type declaration resolver: compound type parents
+### 1.9 Expression stack machine: `count` operator
+
+`count` follows exactly the same two-pass pattern described in §1.8.
+
+**Unsolved pass** (first encounter — queue children):
+
+```python
+elif exp[0].value == "count":
+    stack.append((var, exp, True))
+    for i in range(1, len(exp)):
+        stack.append((var, exp[i], False))
+```
+
+**Solved pass** (second encounter — combine resolved children):
+
+```python
+elif exp[0].value == "count":
+    args = [solved.pop() for _ in range(1, len(exp))]
+    solved.append(self._em.Count(args))
+```
+
+`ExpressionManager.Count` accepts either an unpacked list of boolean expressions or
+a single iterable; passing `args` (a Python list) directly uses the iterable form.
+The LIFO pop order matches the push order (see §1.5 for the reversal argument), so
+`args[0]` corresponds to `exp[1]`, `args[1]` to `exp[2]`, and so on — the same
+left-to-right order in which the count arguments appear in the PDDL source.
+
+`count` differs from `exists`/`forall` (§1.5 and 1.8) in that it introduces no
+variable bindings. Its arguments are plain boolean sub-expressions (predicates,
+fluent comparisons, etc.) that are already valid in the current variable scope.
+
+**Risk of omitting:** `count` falls through to the default `else` branch in both
+the unsolved and solved passes, raising `SyntaxError("Unknown operator")` or
+`UPUnreachableCodeError`, respectively, on any domain that uses `(count ...)` in a
+precondition or goal.
+
+---
+
+### 1.10 Type declaration resolver: compound type parents
 
 The resolver runs after the grammar has parsed the entire `:types` block into a
 `domain_res["types"]` list. Each element of that list is a `ParseResults` from the
@@ -740,7 +611,7 @@ names, crashing downstream when the type name is looked up.
 
 ---
 
-### 1.10 Effect parser: `write` operator
+### 1.11 Effect parser: `write` operator
 
 The effect parser iterates over the children of the `:effect` block. When it
 encounters a `write` token (stored in the variable `op`), it dispatches based on the
@@ -815,7 +686,7 @@ know to unwrap `ARRAY_WRITE` chains when they need the base `Fluent` object.
 
 ---
 
-### 1.11 Effect parser: `add` and `remove` set mutation operators
+### 1.12 Effect parser: `add` and `remove` set mutation operators
 
 ```python
 elif op in ("add", "remove"):
@@ -840,7 +711,7 @@ will later expand this into a per-object boolean update.
 
 ---
 
-### 1.12 Forall/exists variable creation: `RangeVariable` for bounded integer types
+### 1.13 Forall/exists variable creation: `RangeVariable` for bounded integer types
 
 This change appears at **three sites** inside the parser:
 
@@ -885,7 +756,7 @@ which may crash or produce wrong plans.
 
 ---
 
-### 1.13 Initial-state parser: `array.mk` and `set.mk` in `:init`
+### 1.14 Initial-state parser: `array.mk` and `set.mk` in `:init`
 
 ```python
 if isinstance(rhs.value, ParseResults) and rhs[0].value in ("array.mk", "set.mk"):
@@ -1245,6 +1116,67 @@ and compiler passes that type-check intermediate expressions.
 
 ---
 
+## Why the compilers had to be changed for `read`/`write`
+
+Sections §10 and §11 each add a `_transform_array_access` method to an existing
+compiler. A natural question is: could this resolution have been placed elsewhere —
+in a shared walker, in the parser, or in a single compiler rather than two?
+
+**Why the parser cannot do it.**  
+At parse time, array indices are still symbolic action parameters or quantifier
+variables (e.g., `?r`, `?c`). The parser produces `ArrayRead(ArrayRead(board(?a), ?r), ?c)`,
+which is the correct IR representation of the intent "read element `?r, ?c` of
+`board(?a)`". Resolving this to a flat fluent like `board[2][3](?a)` requires concrete
+integer values for `?r` and `?c`, which are not yet available. The parser cannot
+perform the resolution.
+
+**Why a shared stateless walker cannot do it.**  
+`ArraysRemover`'s `_transform_array_access` calls `new_problem.fluent(indexed_name)`
+to look up the pre-declared per-slot fluent. Walkers (`Simplifier`, `TypeChecker`,
+`IdentityDAGWalker`) operate on FNode trees in isolation — they are not passed a
+`Problem` object. They cannot look up whether `board[2][3]` exists, and they cannot
+create new fluents if it does not. The operation is fundamentally problem-scoped, not
+expression-scoped.
+
+**Why the same `_transform_array_access` cannot be shared between IPAR and
+`ArraysRemover`.**  
+The two compilers encounter `ARRAY_READ`/`ARRAY_WRITE` at different levels of
+concreteness:
+
+- **IPAR** runs first. Its indices are still symbolic range variables. Its method
+  must substitute `?r` → `Int(2)` via `int_params`/`instantiations` before it can
+  read the index value. It also does bounds checking (`tuple(indices) not in
+  self.domains[base_name]`) to prune out-of-range action copies silently.
+- **`ArraysRemover`** runs after IPAR. Its indices are already concrete `Int` constants.
+  It skips the substitution step entirely and goes straight to the indexed-fluent
+  lookup in the new problem's fluent table.
+
+The signatures and semantics of the two methods differ enough that sharing them
+would require threading IPAR-specific state (`int_params`, `instantiations`,
+`self.domains`) into a method that `ArraysRemover` never needs. Keeping them
+separate keeps each compiler self-contained and correct for its stage in the
+pipeline.
+
+**Why the generic `_transform_expression` fallback would silently produce wrong output.**  
+Both compilers share a generic fallback that calls `create_node(node_type, new_args)`:
+it rebuilds the current node from its (recursively transformed) children. For a node
+type it does not recognise, it keeps the node kind unchanged and only substitutes
+values in the children.
+
+Applied to `ArrayRead(board(?a), Int(2))` in `ArraysRemover`, the generic path would
+produce another `ARRAY_READ` node with the same children (already concrete) — an
+`ARRAY_READ` FNode, not a `FLUENT_EXP` for `board[2](?a)`. The indexed-fluent
+representation that the rest of the pipeline expects never materialises, and no error
+is raised. The planner receives a problem containing unresolved `ARRAY_READ` nodes,
+which crash or silently misfire at evaluation time.
+
+In summary: `ARRAY_READ`/`ARRAY_WRITE` resolution is a *problem-scoped, stage-
+specific* operation. It cannot be moved to parse time (indices are symbolic), cannot
+be shared across compilers (different concreteness), and cannot be handled by the
+generic fallback (which would silently pass the nodes through unresolved).
+
+---
+
 ## 10. `unified_planning/engines/compilers/arrays_remover.py`
 
 ### 10.1 New `_transform_array_access` method
@@ -1574,20 +1506,53 @@ All new domains are placed under `docs/extensions/domains/`. Each domain has a
 
 - **Instance:** `i0.pddl`.
 
+### 12.5 Count test — party lights (`tests/pddl-extension/`)
+
+- **Files:** `domain_count.pddl`, `problem_count.pddl`, `test_count.py`.
+- **Purpose:** Minimal domain that exercises the `count` expression in an action
+  precondition and verifies the full parse → compile cycle.
+- **Types:** `light - object`.
+- **Predicates:** `(lit ?l - light)`, `(party-on)`.
+- **Actions:**
+  - `turn-on ?l` / `turn-off ?l` — toggle a light.
+  - `start-party ?a ?b ?c` — starts the party when at least 2 of the 3 chosen
+    lights are on:
+    ```pddl
+    :precondition (and
+        (not (= ?a ?b))
+        (not (= ?a ?c))
+        (not (= ?b ?c))
+        (>= (count (lit ?a) (lit ?b) (lit ?c)) 2)
+    )
+    ```
+    The three distinctness guards are required because `?a`, `?b`, `?c` are
+    unconstrained object parameters. Without them the planner can bind all three
+    to the same lit light, making `count = 3 >= 2` true with only one light on.
+- **Problem:** 3 lights (`l1`, `l2`, `l3`); `l1` and `l2` start lit. Minimal plan:
+  `start-party(l1, l2, l3)`.
+
+**Test assertions (`test_count.py`):**
+1. A `Count` FNode is present inside `start-party`'s preconditions after parsing.
+2. `"COUNTING"` appears in `problem.kind.features` before compilation.
+3. After `COUNT_REMOVING`, `"COUNTING"` is absent from the kind and no `Count` node
+   survives in any action precondition or goal.
+
 ---
 
 ## 13. New test files
 
-### 13.1 `docs/extensions/domains/tests/`
+### 13.1 `docs/extensions/domains/tests/pddl-extension/`
 
-Eight new files: four PDDL domains (`domain.pddl`, `domain2d.pddl`,
-`domain_sets.pddl`, `domain_sets2.pddl`) and four corresponding problem files, plus
-two Python test scripts (`test_2d.py`, `test_sets.py`).
+Ten new files: four PDDL domains (`domain.pddl`, `domain2d.pddl`,
+`domain_sets.pddl`, `domain_sets2.pddl`, `domain_count.pddl`) and five corresponding
+problem files, plus three Python test scripts (`test_2d.py`, `test_sets.py`,
+`test_count.py`).
 
 These are minimal, self-contained integration tests that verify:
 - 1-D and 2-D array read/write roundtrips through the full compilation pipeline.
 - Set `member`/`cardinality`/`union`/`intersect`/`difference` in preconditions and
   effects.
+- `count` expression parsing and `COUNT_REMOVING` compilation.
 
 They are placed inside the `docs/` tree rather than `tests/` because they were
 written incrementally during development and exercise the extension-specific pipeline
@@ -1599,7 +1564,7 @@ rather than the main test suite.
 
 | File | Change type | Justification |
 |---|---|---|
-| `io/up_pddl_reader.py` | Feature | Full PDDL surface syntax for arrays, sets, bounded integers |
+| `io/up_pddl_reader.py` | Feature | Full PDDL surface syntax for arrays, sets, bounded integers, and `count` (§1.9) |
 | `model/operators.py` | Feature | New `ARRAY_READ` / `ARRAY_WRITE` operator kinds |
 | `model/expression.py` | Feature | Factory methods for the two new FNode types |
 | `model/fnode.py` | Feature | String repr + predicate methods for the new node types |
@@ -1609,7 +1574,7 @@ rather than the main test suite.
 | `model/transition.py` | Bug fix | Accept `ARRAY_WRITE` as a valid `add_effect` target |
 | `model/walkers/simplifier.py` | Feature | Walk handlers for `ARRAY_READ` / `ARRAY_WRITE` |
 | `model/walkers/type_checker.py` | Feature | Type-inference handlers for `ARRAY_READ` / `ARRAY_WRITE` |
-| `engines/compilers/arrays_remover.py` | Feature + Bug fix | N-D array access transformation; guard against misrouting |
-| `engines/compilers/int_parameter_actions_remover.py` | Feature + Bug fix | Integer-range variable substitution in array indices; `is_constant()` guard |
+| `engines/compilers/arrays_remover.py` | Feature + Bug fix | N-D array access transformation; guard against misrouting (see §"Why the compilers…") |
+| `engines/compilers/int_parameter_actions_remover.py` | Feature + Bug fix | Integer-range variable substitution in array indices; `is_constant()` guard (see §"Why the compilers…") |
 | `docs/extensions/domains/*/pddl-extension/` | Domains | New representative benchmark domains |
-| `docs/extensions/domains/tests/` | Tests | Minimal integration tests for array and set pipelines |
+| `docs/extensions/domains/tests/pddl-extension/` | Tests | Minimal integration tests for array, set, and count pipelines |

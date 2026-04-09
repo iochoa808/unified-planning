@@ -12,7 +12,6 @@
         (puzzle) - puzzle15
     )
 
-    ;; Tile at (?i, ?j) moves UP:   blank must be at (?i-1, ?j), i > 0
     (:action move_up
         :parameters (?i ?j - size)
         :precondition (and
@@ -25,7 +24,6 @@
         )
     )
 
-    ;; Tile at (?i, ?j) moves DOWN:  blank must be at (?i+1, ?j), i < 3
     (:action move_down
         :parameters (?i ?j - size)
         :precondition (and
@@ -38,7 +36,6 @@
         )
     )
 
-    ;; Tile at (?i, ?j) moves LEFT:  blank must be at (?i, ?j-1), j > 0
     (:action move_left
         :parameters (?i ?j - size)
         :precondition (and
@@ -51,7 +48,6 @@
         )
     )
 
-    ;; Tile at (?i, ?j) moves RIGHT: blank must be at (?i, ?j+1), j < 3
     (:action move_right
         :parameters (?i ?j - size)
         :precondition (and

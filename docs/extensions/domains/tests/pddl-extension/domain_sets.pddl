@@ -24,4 +24,10 @@
         :precondition (member ?x (basket))
         :effect (remove ?x (basket))
     )
+
+    (:action dump_basket
+        :parameters ()
+        :precondition ()
+        :effect (assign (basket) (difference (basket) (basket)))
+    )
 )

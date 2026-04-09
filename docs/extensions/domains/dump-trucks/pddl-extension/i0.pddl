@@ -16,9 +16,9 @@
         (= (connects l1) (set.mk (l2)))
         (= (connects l2) (set.mk (l1)))
 
-        (= (package_at l2) (set.mk ()))
-        (= (package_in t1) (set.mk ()))
-        (= (package_in t2) (set.mk ()))
+        ;(= (package_at l2) (set.mk ()))
+        ;(= (package_in t1) (set.mk ()))
+        ;(= (package_in t2) (set.mk ()))
     )
 
     (:goal

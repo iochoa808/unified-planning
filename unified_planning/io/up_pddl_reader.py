@@ -465,6 +465,9 @@ class UPPDDLReader:
                         self._em.Exists if exp[0].value == "exists" else self._em.Forall
                     )
                     solved.append(q_op(solved.pop(), *var.values()))
+                elif exp[0].value == "count":
+                    args = [solved.pop() for _ in range(1, len(exp))]
+                    solved.append(self._em.Count(args))
                 elif (
                     exp[0].value in self._trajectory_constraints
                 ):  # trajectory_constraints reference
@@ -626,6 +629,10 @@ class UPPDDLReader:
                         for i in range(1, len(exp)):
                             stack.append((var, exp[i], False))
                     elif exp[0].value == "read":
+                        stack.append((var, exp, True))
+                        for i in range(1, len(exp)):
+                            stack.append((var, exp[i], False))
+                    elif exp[0].value == "count":
                         stack.append((var, exp, True))
                         for i in range(1, len(exp)):
                             stack.append((var, exp[i], False))
