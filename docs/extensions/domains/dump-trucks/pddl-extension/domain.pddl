@@ -52,7 +52,7 @@
         )
         :effect (and
             (assign (package_at ?l) (union (package_at ?l) (package_in ?t)))
-            (assign (package_in ?t) (difference (package_in ?t) (package_in ?t)))
+            (assign (package_in ?t) ())
         )
     )
 )
