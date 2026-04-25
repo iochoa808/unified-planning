@@ -363,8 +363,7 @@ class SetsRemover(engines.engine.Engine, CompilerMixin):
 
             # Doesn't contain action parameters
             else:
-                fluent_name = f'card_{old_fluent.name}_{str(*set_expr.args)}' \
-                    if set_expr.args else f'card_{old_fluent.name}'
+                fluent_name = f'card_{old_fluent.name}_{"_".join(str(a) for a in set_expr.args)}'
                 if new_problem.has_fluent(fluent_name):
                     return new_problem.fluent(fluent_name)(*set_expr.args)
 
@@ -481,14 +480,9 @@ class SetsRemover(engines.engine.Engine, CompilerMixin):
         right = node.arg(1)
         em = new_problem.environment.expression_manager
 
-        # Get set fluent and constant set
         set_fluent = None
         constant_set = None
         other_set_fluent = None
-
-        assert (left.is_fluent_exp() and (right.is_fluent_exp() or right.is_parameter_exp() or right.is_constant()) or
-                (right.is_fluent_exp() and (left.is_fluent_exp() or left.is_parameter_exp() or left.is_constant()))), \
-            f"Expression of the form {node} not supported"
 
         if left.is_fluent_exp() and left.fluent().type.is_set_type():
             set_fluent = left
@@ -549,7 +543,7 @@ class SetsRemover(engines.engine.Engine, CompilerMixin):
 
             return And(clauses).simplify() if clauses else TRUE()
 
-        # Not a set equality - transform args recursively
+        # No sets equality
         else:
             new_left = self._transform_expression(old_problem, new_problem, left)
             new_right = self._transform_expression(old_problem, new_problem, right)
